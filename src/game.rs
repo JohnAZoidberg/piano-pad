@@ -1,35 +1,33 @@
+use crate::beats::Beat;
 use crate::lamparray::Color;
-use rand::Rng;
 
 const COLS: usize = 4;
 const ROWS: usize = 6;
-const HIT_ROW: usize = ROWS - 1;
 
-const INITIAL_TICK_MS: u64 = 650;
-const MIN_TICK_MS: u64 = 200;
-const TICK_DECREASE_PER_SCORE: u64 = 5;
+pub const TICK_MS: u64 = 200;
+const SCROLL_TICKS: usize = 4; // tiles travel from row 0 to row 4 (2-row tile fills rows 4-5)
+pub const SCROLL_DELAY_MS: u64 = TICK_MS * SCROLL_TICKS as u64;
 
-/// Row colors: dim blue → cyan → green → yellow → orange → bright white
-const ROW_COLORS: [Color; ROWS] = [
-    Color::new(0, 0, 80),      // Row 0: dim blue (spawn)
-    Color::new(0, 120, 120),   // Row 1: cyan
-    Color::new(0, 180, 0),     // Row 2: green
-    Color::new(200, 200, 0),   // Row 3: yellow
-    Color::new(255, 120, 0),   // Row 4: orange
-    Color::new(255, 255, 255), // Row 5: bright white (hit zone)
+/// Two shades per column so consecutive tiles are visually distinct.
+const COL_SHADES: [[Color; 2]; COLS] = [
+    [Color::new(0, 80, 255), Color::new(80, 160, 255)],   // Col 0: blue / light blue
+    [Color::new(0, 220, 0), Color::new(100, 255, 100)],    // Col 1: green / light green
+    [Color::new(255, 200, 0), Color::new(255, 255, 100)],  // Col 2: yellow / pale yellow
+    [Color::new(255, 0, 80), Color::new(255, 100, 160)],   // Col 3: pink / light pink
 ];
 
 #[derive(Clone)]
 struct Tile {
     col: usize,
     row: usize,
+    shade: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
     Ready,
     Playing,
-    GameOver,
+    SongComplete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,17 +40,28 @@ pub enum PressResult {
 pub struct Game {
     pub state: State,
     pub score: u32,
+    pub misses: u32,
+    pub total_beats: usize,
     tiles: Vec<Tile>,
-    rng: rand::rngs::ThreadRng,
+    beats: Vec<Beat>,
+    next_beat_idx: usize,
+    elapsed_ticks: usize,
+    col_shade_counter: [u8; COLS],
 }
 
 impl Game {
-    pub fn new() -> Self {
+    pub fn new(beats: Vec<Beat>) -> Self {
+        let total_beats = beats.len();
         Self {
             state: State::Ready,
             score: 0,
+            misses: 0,
+            total_beats,
             tiles: Vec::new(),
-            rng: rand::thread_rng(),
+            beats,
+            next_beat_idx: 0,
+            elapsed_ticks: 0,
+            col_shade_counter: [0; COLS],
         }
     }
 
@@ -60,78 +69,94 @@ impl Game {
     pub fn start(&mut self) {
         self.state = State::Playing;
         self.score = 0;
+        self.misses = 0;
         self.tiles.clear();
-        // Spawn one tile immediately so the board isn't empty
-        self.spawn_tile();
+        self.next_beat_idx = 0;
+        self.elapsed_ticks = 0;
+        self.col_shade_counter = [0; COLS];
     }
 
     /// Reset to ready screen.
     pub fn reset(&mut self) {
         self.state = State::Ready;
         self.score = 0;
+        self.misses = 0;
         self.tiles.clear();
+        self.next_beat_idx = 0;
+        self.elapsed_ticks = 0;
+        self.col_shade_counter = [0; COLS];
     }
 
-    /// Current tick interval in milliseconds.
-    pub fn tick_ms(&self) -> u64 {
-        let decrease = self.score as u64 * TICK_DECREASE_PER_SCORE;
-        INITIAL_TICK_MS.saturating_sub(decrease).max(MIN_TICK_MS)
-    }
-
-    /// Advance one game tick: move tiles down, spawn new tile.
-    /// Returns false if a tile fell off the bottom (game over).
-    pub fn tick(&mut self) -> bool {
+    /// Advance one game tick. Returns the number of tiles that fell off (missed).
+    pub fn tick(&mut self) -> u32 {
         if self.state != State::Playing {
-            return true;
+            return 0;
         }
 
-        // Move all tiles down
+        // 1. Move all tiles down one row
         for tile in &mut self.tiles {
             tile.row += 1;
         }
 
-        // Check if any tile fell off the bottom
-        if self.tiles.iter().any(|t| t.row > HIT_ROW) {
-            self.state = State::GameOver;
-            return false;
+        // 2. Remove tiles that fell past the grid (missed beats)
+        let before = self.tiles.len();
+        self.tiles.retain(|t| t.row + 1 < ROWS);
+        let dropped = (before - self.tiles.len()) as u32;
+        self.misses += dropped;
+
+        // 3. Spawn tiles whose beat.time <= elapsed_ticks * TICK_MS / 1000
+        let elapsed_secs = self.elapsed_ticks as f64 * TICK_MS as f64 / 1000.0;
+        while self.next_beat_idx < self.beats.len() {
+            if self.beats[self.next_beat_idx].time <= elapsed_secs {
+                let beat = &self.beats[self.next_beat_idx];
+                let col = beat.col;
+                let shade = self.col_shade_counter[col] % 2;
+                self.col_shade_counter[col] = self.col_shade_counter[col].wrapping_add(1);
+                self.tiles.push(Tile { col, row: 0, shade });
+                self.next_beat_idx += 1;
+            } else {
+                break;
+            }
         }
 
-        // Spawn a new tile at the top
-        self.spawn_tile();
-        true
+        // 4. Increment elapsed_ticks
+        self.elapsed_ticks += 1;
+
+        // 5. If all beats spawned and no tiles left → SongComplete
+        if self.next_beat_idx >= self.beats.len() && self.tiles.is_empty() {
+            self.state = State::SongComplete;
+        }
+
+        dropped
     }
 
-    /// Handle a column press. Returns the result.
-    pub fn press_column(&mut self, col: usize) -> PressResult {
+    /// Handle a column press. Matches any tile in the hit zone for that column.
+    pub fn press(&mut self, col: usize) -> PressResult {
         if self.state != State::Playing {
             return PressResult::Ignored;
         }
 
-        // Check if there's a tile at the hit row
-        let hit_row_tile = self.tiles.iter().position(|t| t.row == HIT_ROW);
-
-        match hit_row_tile {
-            Some(idx) if self.tiles[idx].col == col => {
-                // Correct hit
-                self.tiles.remove(idx);
-                self.score += 1;
-                PressResult::Hit
-            }
-            Some(_) => {
-                // Wrong column — game over
-                self.state = State::GameOver;
-                PressResult::Miss
-            }
-            None => {
-                // No tile at hit row — lenient, just ignore
-                PressResult::Ignored
-            }
+        // Look for a tile in this column whose 2-row span overlaps the hit zone (rows 4-5)
+        if let Some(idx) = self
+            .tiles
+            .iter()
+            .position(|t| t.col == col && t.row + 1 >= 4 && t.row <= 4)
+        {
+            self.tiles.remove(idx);
+            self.score += 1;
+            PressResult::Hit
+        } else if self
+            .tiles
+            .iter()
+            .any(|t| t.row + 1 >= 4 && t.row <= 4)
+        {
+            // A tile overlaps the hit zone but wrong column → miss
+            self.misses += 1;
+            PressResult::Miss
+        } else {
+            // No tiles in hit zone at all → lenient ignore
+            PressResult::Ignored
         }
-    }
-
-    fn spawn_tile(&mut self) {
-        let col = self.rng.gen_range(0..COLS);
-        self.tiles.push(Tile { col, row: 0 });
     }
 
     /// Render the current game state as a 6×4 color grid.
@@ -139,15 +164,18 @@ impl Game {
         match self.state {
             State::Ready => self.render_ready(),
             State::Playing => self.render_playing(),
-            State::GameOver => self.render_game_over(),
+            State::SongComplete => self.render_song_complete(),
         }
     }
 
     fn render_ready(&self) -> [[Color; 4]; 6] {
         let mut grid = [[Color::BLACK; 4]; 6];
-        // Light up bottom row to indicate "press to start"
-        for col in 0..COLS {
-            grid[HIT_ROW][col] = Color::new(0, 80, 0);
+        // Light up bottom two rows in dim column colors (use shade 0)
+        for (col, shades) in COL_SHADES.iter().enumerate() {
+            let c = shades[0];
+            let dim = Color::new(c.r / 4, c.g / 4, c.b / 4);
+            grid[4][col] = dim;
+            grid[5][col] = dim;
         }
         grid
     }
@@ -155,15 +183,21 @@ impl Game {
     fn render_playing(&self) -> [[Color; 4]; 6] {
         let mut grid = [[Color::BLACK; 4]; 6];
         for tile in &self.tiles {
+            let color = COL_SHADES[tile.col][tile.shade as usize];
+            // Each tile is 2 rows tall: top at tile.row, bottom at tile.row+1
             if tile.row < ROWS {
-                grid[tile.row][tile.col] = ROW_COLORS[tile.row];
+                grid[tile.row][tile.col] = color;
+            }
+            let bottom = tile.row + 1;
+            if bottom < ROWS {
+                grid[bottom][tile.col] = color;
             }
         }
         grid
     }
 
-    fn render_game_over(&self) -> [[Color; 4]; 6] {
-        [[Color::RED; 4]; 6]
+    fn render_song_complete(&self) -> [[Color; 4]; 6] {
+        [[Color::new(0, 255, 0); 4]; 6]
     }
 }
 
@@ -171,118 +205,178 @@ impl Game {
 mod tests {
     use super::*;
 
+    fn make_beats(times: &[f64]) -> Vec<Beat> {
+        times
+            .iter()
+            .enumerate()
+            .map(|(i, &time)| Beat {
+                time,
+                col: i % COLS,
+            })
+            .collect()
+    }
+
     #[test]
     fn test_new_game_is_ready() {
-        let game = Game::new();
+        let game = Game::new(vec![]);
         assert_eq!(game.state, State::Ready);
         assert_eq!(game.score, 0);
+        assert_eq!(game.misses, 0);
     }
 
     #[test]
     fn test_start_game() {
-        let mut game = Game::new();
+        let beats = make_beats(&[0.0, 0.5, 1.0]);
+        let mut game = Game::new(beats);
         game.start();
         assert_eq!(game.state, State::Playing);
         assert_eq!(game.score, 0);
-        // Should have spawned one tile
+        assert_eq!(game.next_beat_idx, 0);
+        assert_eq!(game.elapsed_ticks, 0);
+    }
+
+    #[test]
+    fn test_tick_spawns_beat_at_time_zero() {
+        let beats = make_beats(&[0.0]);
+        let mut game = Game::new(beats);
+        game.start();
+
+        // First tick: moves tiles (none yet), spawns beat at time 0.0, increments elapsed
+        game.tick();
         assert_eq!(game.tiles.len(), 1);
         assert_eq!(game.tiles[0].row, 0);
+        assert_eq!(game.next_beat_idx, 1);
     }
 
     #[test]
-    fn test_tick_moves_tiles_down() {
-        let mut game = Game::new();
-        game.start();
-        let initial_col = game.tiles[0].col;
-
-        game.tick();
-        // Original tile moved to row 1, new tile spawned at row 0
-        assert_eq!(game.tiles.len(), 2);
-        assert!(game
-            .tiles
-            .iter()
-            .any(|t| t.row == 1 && t.col == initial_col));
-        assert!(game.tiles.iter().any(|t| t.row == 0));
-    }
-
-    #[test]
-    fn test_tile_falls_off_is_game_over() {
-        let mut game = Game::new();
+    fn test_missed_tile_drops_off_and_counts() {
+        // A tile at row 4 (occupies 4,5) moves to row 5 (occupies 5,6) → removed, miss counted
+        // Use a far-future beat so the game doesn't immediately complete
+        let beats = make_beats(&[999.0]);
+        let mut game = Game::new(beats);
         game.state = State::Playing;
-        game.tiles.push(Tile {
-            col: 0,
-            row: HIT_ROW,
-        });
+        game.tiles.push(Tile { col: 0, row: 4, shade: 0 });
 
-        let ok = game.tick();
-        assert!(!ok);
-        assert_eq!(game.state, State::GameOver);
+        let dropped = game.tick();
+        assert_eq!(dropped, 1);
+        assert!(game.tiles.is_empty());
+        assert_eq!(game.misses, 1);
+        assert_eq!(game.state, State::Playing); // game continues
     }
 
     #[test]
-    fn test_correct_hit() {
-        let mut game = Game::new();
+    fn test_press_hit_at_row_3() {
+        // Tile at row 3 occupies rows 3,4 (overlaps hit zone). Column press should hit.
+        let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile {
-            col: 2,
-            row: HIT_ROW,
-        });
+        game.tiles.push(Tile { col: 2, row: 3, shade: 0 });
 
-        let result = game.press_column(2);
+        let result = game.press(2);
         assert_eq!(result, PressResult::Hit);
         assert_eq!(game.score, 1);
         assert!(game.tiles.is_empty());
     }
 
     #[test]
-    fn test_wrong_column_is_miss() {
-        let mut game = Game::new();
+    fn test_press_hit_at_row_4() {
+        // Tile at row 4 occupies rows 4,5 (fully in hit zone). Column press should hit.
+        let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile {
-            col: 2,
-            row: HIT_ROW,
-        });
+        game.tiles.push(Tile { col: 1, row: 4, shade: 0 });
 
-        let result = game.press_column(0);
-        assert_eq!(result, PressResult::Miss);
-        assert_eq!(game.state, State::GameOver);
+        let result = game.press(1);
+        assert_eq!(result, PressResult::Hit);
+        assert_eq!(game.score, 1);
     }
 
     #[test]
-    fn test_no_tile_at_hit_row_is_ignored() {
-        let mut game = Game::new();
+    fn test_press_wrong_column_is_miss() {
+        // Tile at row 4 (occupies 4,5) is in hit zone. Wrong column → miss, but game continues.
+        let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 0, row: 2 });
+        game.tiles.push(Tile { col: 2, row: 4, shade: 0 });
 
-        let result = game.press_column(0);
+        let result = game.press(0);
+        assert_eq!(result, PressResult::Miss);
+        assert_eq!(game.misses, 1);
+        assert_eq!(game.state, State::Playing);
+    }
+
+    #[test]
+    fn test_press_no_tile_in_hit_zone_is_ignored() {
+        let mut game = Game::new(vec![]);
+        game.state = State::Playing;
+        game.tiles.push(Tile { col: 0, row: 1, shade: 0 });
+
+        let result = game.press(0);
         assert_eq!(result, PressResult::Ignored);
     }
 
     #[test]
-    fn test_speed_scaling() {
-        let mut game = Game::new();
-        assert_eq!(game.tick_ms(), 650);
+    fn test_song_complete() {
+        // Single beat at time 0
+        let beats = make_beats(&[0.0]);
+        let mut game = Game::new(beats);
+        game.start();
 
-        game.score = 10;
-        assert_eq!(game.tick_ms(), 600);
+        // Tick 1: spawn beat at row 0 (occupies 0,1)
+        game.tick();
+        assert_eq!(game.tiles.len(), 1);
 
-        game.score = 90;
-        assert_eq!(game.tick_ms(), 200); // floor
+        // Move to row 3 (occupies 3,4 — partially in hit zone)
+        game.tick(); // row 1
+        game.tick(); // row 2
+        game.tick(); // row 3
 
-        game.score = 200;
-        assert_eq!(game.tick_ms(), 200); // still floor
+        // Hit it (tile is in hit zone now)
+        let col = game.tiles[0].col;
+        let result = game.press(col);
+        assert_eq!(result, PressResult::Hit);
+
+        // Next tick should detect song complete (all beats spawned, no tiles)
+        game.tick();
+        assert_eq!(game.state, State::SongComplete);
     }
 
     #[test]
-    fn test_render_ready_bottom_row_lit() {
-        let game = Game::new();
+    fn test_song_complete_with_misses() {
+        // Beat at time 0 — let it fall off, song should still complete
+        let beats = make_beats(&[0.0]);
+        let mut game = Game::new(beats);
+        game.start();
+
+        // Tick through until tile falls off
+        for _ in 0..6 {
+            game.tick();
+        }
+
+        assert_eq!(game.misses, 1);
+        assert_eq!(game.state, State::SongComplete);
+    }
+
+    #[test]
+    fn test_render_song_complete_all_green() {
+        let mut game = Game::new(vec![]);
+        game.state = State::SongComplete;
         let grid = game.render();
-        // Bottom row should be lit
+        for row in &grid {
+            for color in row {
+                assert_eq!(*color, Color::new(0, 255, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn test_render_ready_hit_zone_lit() {
+        let game = Game::new(vec![]);
+        let grid = game.render();
+        // Rows 4 and 5 should be lit
         for col in 0..4 {
-            assert_ne!(grid[HIT_ROW][col], Color::BLACK);
+            assert_ne!(grid[4][col], Color::BLACK);
+            assert_ne!(grid[5][col], Color::BLACK);
         }
         // Other rows should be black
-        for row in 0..HIT_ROW {
+        for row in 0..4 {
             for col in 0..4 {
                 assert_eq!(grid[row][col], Color::BLACK);
             }
@@ -290,26 +384,38 @@ mod tests {
     }
 
     #[test]
-    fn test_render_playing_shows_tiles() {
-        let mut game = Game::new();
+    fn test_render_playing_shows_2row_tiles() {
+        let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 3 });
+        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
 
         let grid = game.render();
-        assert_eq!(grid[3][1], ROW_COLORS[3]);
+        // Tile occupies row 2 and row 3, both in column 1's shade 0
+        assert_eq!(grid[2][1], COL_SHADES[1][0]);
+        assert_eq!(grid[3][1], COL_SHADES[1][0]);
+        // Adjacent columns should be black
+        assert_eq!(grid[2][0], Color::BLACK);
         assert_eq!(grid[3][0], Color::BLACK);
+        // Row above should be black
+        assert_eq!(grid[1][1], Color::BLACK);
     }
 
     #[test]
-    fn test_render_game_over_all_red() {
-        let mut game = Game::new();
-        game.state = State::GameOver;
+    fn test_render_alternating_shades() {
+        let mut game = Game::new(vec![]);
+        game.state = State::Playing;
+        game.tiles.push(Tile { col: 0, row: 0, shade: 0 });
+        game.tiles.push(Tile { col: 0, row: 3, shade: 1 });
+
         let grid = game.render();
-        for row in &grid {
-            for color in row {
-                assert_eq!(*color, Color::RED);
-            }
-        }
+        // First tile (shade 0) at rows 0,1
+        assert_eq!(grid[0][0], COL_SHADES[0][0]);
+        assert_eq!(grid[1][0], COL_SHADES[0][0]);
+        // Second tile (shade 1) at rows 3,4
+        assert_eq!(grid[3][0], COL_SHADES[0][1]);
+        assert_eq!(grid[4][0], COL_SHADES[0][1]);
+        // The two shades should be different
+        assert_ne!(COL_SHADES[0][0], COL_SHADES[0][1]);
     }
 
     #[test]
@@ -331,12 +437,17 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut game = Game::new();
+        let beats = make_beats(&[0.0, 0.5]);
+        let mut game = Game::new(beats);
         game.start();
         game.score = 42;
+        game.misses = 3;
         game.reset();
         assert_eq!(game.state, State::Ready);
         assert_eq!(game.score, 0);
+        assert_eq!(game.misses, 0);
         assert!(game.tiles.is_empty());
+        assert_eq!(game.next_beat_idx, 0);
+        assert_eq!(game.elapsed_ticks, 0);
     }
 }

@@ -1,23 +1,14 @@
 use anyhow::Result;
-use rodio::source::{SineWave, Source};
-use rodio::{OutputStream, OutputStreamHandle, Sink};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 use std::time::Duration;
-
-/// Column tones: C major arpeggio
-const COLUMN_FREQS: [f32; 4] = [
-    261.63, // Col 0: C4
-    329.63, // Col 1: E4
-    392.00, // Col 2: G4
-    523.25, // Col 3: C5
-];
-
-const GAME_OVER_FREQ: f32 = 200.0;
-const TONE_DURATION_MS: u64 = 150;
-const GAME_OVER_DURATION_MS: u64 = 500;
 
 pub struct Audio {
     _stream: OutputStream,
     handle: OutputStreamHandle,
+    song_sink: Option<Sink>,
 }
 
 impl Audio {
@@ -27,28 +18,29 @@ impl Audio {
         Ok(Self {
             _stream: stream,
             handle,
+            song_sink: None,
         })
     }
 
-    /// Play a short tone for the given column (fire-and-forget).
-    pub fn play_column_tone(&self, col: usize) {
-        if col >= COLUMN_FREQS.len() {
-            return;
-        }
-        self.play_tone(COLUMN_FREQS[col], TONE_DURATION_MS);
-    }
-
-    /// Play a low game-over tone.
-    pub fn play_game_over(&self) {
-        self.play_tone(GAME_OVER_FREQ, GAME_OVER_DURATION_MS);
-    }
-
-    fn play_tone(&self, freq: f32, duration_ms: u64) {
-        let Ok(sink) = Sink::try_new(&self.handle) else {
-            return;
-        };
-        let source = SineWave::new(freq).take_duration(Duration::from_millis(duration_ms));
+    /// Start playing the song MP3 file at the given speed, optionally seeking forward.
+    pub fn play_song(&mut self, path: &Path, speed: f32, seek: Duration) -> Result<()> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let source = Decoder::new(reader)?;
+        let sink = Sink::try_new(&self.handle)?;
+        sink.set_speed(speed);
         sink.append(source);
-        sink.detach();
+        if !seek.is_zero() {
+            let _ = sink.try_seek(seek);
+        }
+        self.song_sink = Some(sink);
+        Ok(())
+    }
+
+    /// Stop the currently playing song.
+    pub fn stop_song(&mut self) {
+        if let Some(sink) = self.song_sink.take() {
+            sink.stop();
+        }
     }
 }

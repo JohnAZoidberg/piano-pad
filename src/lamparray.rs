@@ -34,6 +34,7 @@ impl Color {
     }
 
     pub const BLACK: Color = Color::new(0, 0, 0);
+    #[allow(dead_code)]
     pub const RED: Color = Color::new(255, 0, 0);
 }
 
@@ -104,6 +105,7 @@ impl LampArray {
     }
 
     /// Set all 24 LEDs to a single color.
+    #[allow(dead_code)]
     pub fn fill(&self, color: Color) -> Result<()> {
         let grid = [[color; 4]; 6];
         self.render_grid(&grid)

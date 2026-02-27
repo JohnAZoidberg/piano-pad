@@ -3,7 +3,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameInput {
-    /// Player pressed a column key (0-3), mapped from bottom-row keys U/V/W/X
+    /// Player pressed a column key (0-3)
     Column(usize),
     /// Quit the game
     Quit,
@@ -12,6 +12,8 @@ pub enum GameInput {
 }
 
 /// Map a crossterm KeyEvent to a GameInput.
+/// Macropad ABC layout: A-D=row0, E-H=row1, I-L=row2, M-P=row3, Q-T=row4, U-X=row5
+/// All rows map to columns 0-3.
 fn map_key(event: KeyEvent) -> Option<GameInput> {
     // Ctrl+C always quits
     if event.modifiers.contains(KeyModifiers::CONTROL) && event.code == KeyCode::Char('c') {
@@ -20,11 +22,15 @@ fn map_key(event: KeyEvent) -> Option<GameInput> {
 
     match event.code {
         KeyCode::Esc => Some(GameInput::Quit),
-        // Bottom-row macropad keys: U=col0, V=col1, W=col2, X=col3
-        KeyCode::Char('u' | 'U') => Some(GameInput::Column(0)),
-        KeyCode::Char('v' | 'V') => Some(GameInput::Column(1)),
-        KeyCode::Char('w' | 'W') => Some(GameInput::Column(2)),
-        KeyCode::Char('x' | 'X') => Some(GameInput::Column(3)),
+        KeyCode::Char(c) => {
+            let c = c.to_ascii_lowercase();
+            if ('a'..='x').contains(&c) {
+                let col = (c as usize - 'a' as usize) % 4;
+                Some(GameInput::Column(col))
+            } else {
+                Some(GameInput::AnyKey)
+            }
+        }
         _ => Some(GameInput::AnyKey),
     }
 }
