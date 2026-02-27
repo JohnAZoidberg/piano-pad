@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use audio::Audio;
+use beats::BeatMode;
 use game::{Game, PressResult, State, SCROLL_DELAY_MS, TICK_MS};
 
 const DEFAULT_SPEED: f32 = 1.0;
@@ -81,13 +82,15 @@ struct Config {
     song_path: PathBuf,
     speed: f32,
     skip_intro: bool,
+    beat_mode: BeatMode,
 }
 
-/// Parse CLI args: [--speed N] [--skip-intro] [song.mp3]
+/// Parse CLI args: [--speed N] [--skip-intro] [--rhythm] [song.mp3]
 fn parse_args() -> Result<Config> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut speed = DEFAULT_SPEED;
     let mut skip_intro = false;
+    let mut beat_mode = BeatMode::Pitch;
     let mut song_path: Option<PathBuf> = None;
 
     let mut i = 0;
@@ -111,6 +114,9 @@ fn parse_args() -> Result<Config> {
             "--skip-intro" => {
                 skip_intro = true;
             }
+            "--rhythm" => {
+                beat_mode = BeatMode::Rhythm;
+            }
             _ => {
                 let path = PathBuf::from(&args[i]);
                 if !path.exists() {
@@ -131,6 +137,7 @@ fn parse_args() -> Result<Config> {
         song_path,
         speed,
         skip_intro,
+        beat_mode,
     })
 }
 
@@ -171,7 +178,7 @@ fn run() -> Result<()> {
 
     // Find and analyze song before entering raw mode
     println!("Analyzing {}...", song_path.display());
-    let mut beats = beats::detect_beats(&song_path)?;
+    let mut beats = beats::detect_beats(&song_path, config.beat_mode)?;
 
     // Skip intro: shift beat times so the first beat arrives quickly
     let intro_skip = if config.skip_intro {
