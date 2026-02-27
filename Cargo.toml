@@ -1,0 +1,11 @@
+[package]
+name = "piano-pad"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hidapi = "2.6"
+crossterm = "0.28"
+rodio = "0.20"
+rand = "0.8"
+anyhow = "1"

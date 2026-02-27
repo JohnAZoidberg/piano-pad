@@ -1,0 +1,4 @@
+# Framework Laptop 16 Macropad — allow non-root access to HID LampArray interface
+# Install: sudo cp 50-framework-macropad.rules /etc/udev/rules.d/
+# Reload: sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="32ac", ATTRS{idProduct}=="0013", MODE="0660", TAG+="uaccess"
