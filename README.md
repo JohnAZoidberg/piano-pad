@@ -66,9 +66,15 @@ cargo run -- --speed 0.5
 # Skip the intro (jump to 1.5s before the first beat)
 cargo run -- --skip-intro
 
+# Run without the physical macropad (terminal grid only)
+cargo run -- --no-pad
+
 # Combine options
 cargo run -- --speed 0.75 --skip-intro --rhythm path/to/song.mp3
 ```
+
+The terminal always shows a colored 6×4 grid simulation using ANSI 24-bit
+color. With `--no-pad` you can run and test without the hardware attached.
 
 ### Analyze tool
 
@@ -81,7 +87,7 @@ cargo run --bin analyze -- --rhythm songs/song.mp3
 
 ## Requirements
 
-- Framework Laptop 16 with LED macropad module
+- Framework Laptop 16 with LED macropad module (or use `--no-pad` to run without it)
 - **ffmpeg** — used for audio decoding (must be in `$PATH`)
 - Rust toolchain
 - Linux (HID access — may need `udev` rules or root)

@@ -1,5 +1,6 @@
 mod audio;
 mod beats;
+mod display;
 mod game;
 mod input;
 mod lamparray;
@@ -22,6 +23,9 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(5);
 const FLASH_DURATION: Duration = Duration::from_millis(250);
 
 const FLASH_MISS: Color = Color::new(255, 0, 0);
+
+/// Number of terminal lines occupied by the grid display (6 rows + 1 status).
+const GRID_LINES: usize = 7;
 
 struct Flash {
     cells: Vec<(usize, usize, Color)>, // (row, col, color)
@@ -47,18 +51,20 @@ impl Flash {
 
 /// RAII guard that re-enables autonomous LED mode and disables raw terminal mode on drop.
 struct CleanupGuard<'a> {
-    lamp: &'a LampArray,
+    lamp: Option<&'a LampArray>,
 }
 
 impl<'a> CleanupGuard<'a> {
-    fn new(lamp: &'a LampArray) -> Self {
+    fn new(lamp: Option<&'a LampArray>) -> Self {
         Self { lamp }
     }
 }
 
 impl Drop for CleanupGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.lamp.enable_autonomous();
+        if let Some(lamp) = self.lamp {
+            let _ = lamp.enable_autonomous();
+        }
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -68,14 +74,16 @@ struct Config {
     speed: f32,
     skip_intro: bool,
     beat_mode: BeatMode,
+    no_pad: bool,
 }
 
-/// Parse CLI args: [--speed N] [--skip-intro] [--rhythm] [song.mp3]
+/// Parse CLI args: [--speed N] [--skip-intro] [--rhythm] [--no-pad] [song.mp3]
 fn parse_args() -> Result<Config> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut speed = DEFAULT_SPEED;
     let mut skip_intro = false;
     let mut beat_mode = BeatMode::Pitch;
+    let mut no_pad = false;
     let mut song_path: Option<PathBuf> = None;
 
     let mut i = 0;
@@ -102,6 +110,9 @@ fn parse_args() -> Result<Config> {
             "--rhythm" => {
                 beat_mode = BeatMode::Rhythm;
             }
+            "--no-pad" => {
+                no_pad = true;
+            }
             _ => {
                 let path = PathBuf::from(&args[i]);
                 if !path.exists() {
@@ -123,6 +134,7 @@ fn parse_args() -> Result<Config> {
         speed,
         skip_intro,
         beat_mode,
+        no_pad,
     })
 }
 
@@ -148,6 +160,21 @@ fn find_first_mp3() -> Result<PathBuf> {
 
 /// Lead-in time before first beat when skipping intro (seconds).
 const INTRO_LEAD_IN: f64 = 1.5;
+
+/// Build the status string for the current game state.
+fn status_text(game: &Game) -> String {
+    match game.state {
+        State::Ready => "Press any macropad key to start!".to_string(),
+        State::Playing => format!(
+            "Score: {} / {}  |  Missed: {}",
+            game.score, game.total_beats, game.misses
+        ),
+        State::SongComplete => format!(
+            "SONG COMPLETE!  Score: {} / {}  |  Missed: {}  |  Press any key to restart",
+            game.score, game.total_beats, game.misses
+        ),
+    }
+}
 
 fn run() -> Result<()> {
     // Parse CLI args
@@ -189,25 +216,29 @@ fn run() -> Result<()> {
         println!("Found {} beats", beats.len());
     }
 
-    // Open hardware
-    let lamp = LampArray::open()?;
-    lamp.disable_autonomous()?;
+    // Open hardware (optional with --no-pad)
+    let lamp = if config.no_pad {
+        None
+    } else {
+        let l = LampArray::open()?;
+        l.disable_autonomous()?;
+        Some(l)
+    };
 
     // Open audio (optional — continue without sound if unavailable)
     let mut audio = Audio::new().ok();
 
     // Enable raw mode for keyboard input
     terminal::enable_raw_mode()?;
-    let _guard = CleanupGuard::new(&lamp);
+    let _guard = CleanupGuard::new(lamp.as_ref());
 
+    let mut stdout = io::stdout();
     let mut game = Game::new(beats);
     let mut last_grid = [[Color::BLACK; 4]; 6];
     let mut dirty = true;
     let mut last_tick = Instant::now();
     let mut flash: Option<Flash> = None;
-
-    // Print initial status
-    print_status(&game);
+    let mut drew_grid = false;
 
     loop {
         // Expire flash
@@ -218,7 +249,7 @@ fn run() -> Result<()> {
             }
         }
 
-        // Render LEDs only when state changed
+        // Render when state changed
         if dirty {
             let mut grid = game.render();
             // Overlay flash on top of game grid
@@ -227,10 +258,22 @@ fn run() -> Result<()> {
                     grid[row][col] = color;
                 }
             }
-            if grid != last_grid {
-                lamp.render_grid(&grid)?;
-                last_grid = grid;
+
+            // Terminal grid: reposition cursor and redraw
+            if drew_grid {
+                // Move cursor up to overwrite previous grid + status
+                write!(stdout, "\x1b[{}A\r", GRID_LINES)?;
             }
+            display::render_terminal_grid(&mut stdout, &grid, &status_text(&game))?;
+            drew_grid = true;
+
+            // Hardware: only send when grid colors actually changed
+            if let Some(ref l) = lamp {
+                if grid != last_grid {
+                    l.render_grid(&grid)?;
+                }
+            }
+            last_grid = grid;
             dirty = false;
         }
 
@@ -252,7 +295,6 @@ fn run() -> Result<()> {
                         last_tick = Instant::now();
                         flash = None;
                         dirty = true;
-                        print_status(&game);
                     }
                 },
                 State::Playing => match input {
@@ -261,21 +303,26 @@ fn run() -> Result<()> {
                         let result = game.press(row, col);
                         match result {
                             PressResult::Hit => {
-                                print_debug(&format!(
-                                    "HIT  row={row} col={col}  score={}/{}",
-                                    game.score, game.total_beats
-                                ));
+                                print_debug(
+                                    &mut stdout,
+                                    drew_grid,
+                                    &format!(
+                                        "HIT  row={row} col={col}  score={}/{}",
+                                        game.score, game.total_beats
+                                    ),
+                                );
+                                drew_grid = false;
                                 dirty = true;
-                                print_status(&game);
                             }
                             PressResult::Miss => {
                                 flash = Some(Flash::miss_press(row, col));
-                                print_debug(&format!(
-                                    "MISS row={row} col={col}  misses={}",
-                                    game.misses
-                                ));
+                                print_debug(
+                                    &mut stdout,
+                                    drew_grid,
+                                    &format!("MISS row={row} col={col}  misses={}", game.misses),
+                                );
+                                drew_grid = false;
                                 dirty = true;
-                                print_status(&game);
                             }
                             PressResult::Ignored => {}
                         }
@@ -288,7 +335,6 @@ fn run() -> Result<()> {
                         game.reset();
                         flash = None;
                         dirty = true;
-                        print_status(&game);
                     }
                 },
             }
@@ -307,7 +353,6 @@ fn run() -> Result<()> {
                 // Flash hit zone red when tiles fall through
                 if dropped > 0 {
                     flash = Some(Flash::miss_dropped());
-                    print_status(&game);
                 }
 
                 // Check for song complete
@@ -315,7 +360,6 @@ fn run() -> Result<()> {
                     if let Some(ref mut a) = audio {
                         a.stop_song();
                     }
-                    print_status(&game);
                 }
             }
         }
@@ -333,29 +377,16 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Print game status to the terminal status line (works in raw mode).
-fn print_status(game: &Game) {
-    let status = match game.state {
-        State::Ready => "Press any macropad key to start!".to_string(),
-        State::Playing => format!(
-            "Score: {} / {}  |  Missed: {}",
-            game.score, game.total_beats, game.misses
-        ),
-        State::SongComplete => format!(
-            "SONG COMPLETE!  Score: {} / {}  |  Missed: {}  |  Press any key to restart",
-            game.score, game.total_beats, game.misses
-        ),
-    };
-    // Move to beginning of line, clear it, print status
-    print!("\r\x1b[K{status}");
-    let _ = io::stdout().flush();
-}
-
-/// Print a debug line above the status line (works in raw mode).
-fn print_debug(msg: &str) {
-    // Print message, then newline, so status line can be reprinted below
-    print!("\r\x1b[K{msg}\r\n");
-    let _ = io::stdout().flush();
+/// Print a debug line above the grid (works in raw mode).
+/// Moves cursor above the grid first, prints the message, then lets the grid redraw below.
+fn print_debug(stdout: &mut impl Write, drew_grid: bool, msg: &str) {
+    if drew_grid {
+        // Move up past the grid, print debug line, then the grid will be redrawn below
+        let _ = write!(stdout, "\x1b[{}A\r\x1b[K{msg}\r\n", GRID_LINES);
+    } else {
+        let _ = write!(stdout, "\r\x1b[K{msg}\r\n");
+    }
+    let _ = stdout.flush();
 }
 
 fn main() {
