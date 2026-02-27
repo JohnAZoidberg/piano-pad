@@ -12,10 +12,10 @@ pub const SCROLL_DELAY_MS: u64 = TICK_MS * (SCROLL_TICKS + 1) as u64;
 
 /// Two shades per column so consecutive tiles are visually distinct.
 const COL_SHADES: [[Color; 2]; COLS] = [
-    [Color::new(0, 80, 255), Color::new(80, 160, 255)],   // Col 0: blue / light blue
-    [Color::new(0, 220, 0), Color::new(100, 255, 100)],    // Col 1: green / light green
-    [Color::new(255, 200, 0), Color::new(255, 255, 100)],  // Col 2: yellow / pale yellow
-    [Color::new(255, 0, 80), Color::new(255, 100, 160)],   // Col 3: pink / light pink
+    [Color::new(0, 80, 255), Color::new(80, 160, 255)], // Col 0: blue / light blue
+    [Color::new(0, 220, 0), Color::new(100, 255, 100)], // Col 1: green / light green
+    [Color::new(255, 200, 0), Color::new(255, 255, 100)], // Col 2: yellow / pale yellow
+    [Color::new(255, 0, 80), Color::new(255, 100, 160)], // Col 3: pink / light pink
 ];
 
 #[derive(Clone)]
@@ -261,7 +261,11 @@ mod tests {
         let beats = make_beats(&[999.0]);
         let mut game = Game::new(beats);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 0, row: 4, shade: 0 });
+        game.tiles.push(Tile {
+            col: 0,
+            row: 4,
+            shade: 0,
+        });
 
         let dropped = game.tick();
         assert_eq!(dropped, 1);
@@ -275,7 +279,11 @@ mod tests {
         // Tile at row 3 occupies rows 3,4. Pressing row 3, col 2 should hit.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 2, row: 3, shade: 0 });
+        game.tiles.push(Tile {
+            col: 2,
+            row: 3,
+            shade: 0,
+        });
 
         let result = game.press(3, 2);
         assert_eq!(result, PressResult::Hit);
@@ -288,7 +296,11 @@ mod tests {
         // Tile at row 3 occupies rows 3,4. Pressing row 4, col 2 should also hit.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 2, row: 3, shade: 0 });
+        game.tiles.push(Tile {
+            col: 2,
+            row: 3,
+            shade: 0,
+        });
 
         let result = game.press(4, 2);
         assert_eq!(result, PressResult::Hit);
@@ -300,7 +312,11 @@ mod tests {
         // Tile at row 0 occupies rows 0,1. Pressing row 1, col 1 should hit.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 0, shade: 0 });
+        game.tiles.push(Tile {
+            col: 1,
+            row: 0,
+            shade: 0,
+        });
 
         let result = game.press(1, 1);
         assert_eq!(result, PressResult::Hit);
@@ -312,7 +328,11 @@ mod tests {
         // Tile at row 2 (occupies 2,3). Wrong column at same row → miss.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 2, row: 2, shade: 0 });
+        game.tiles.push(Tile {
+            col: 2,
+            row: 2,
+            shade: 0,
+        });
 
         let result = game.press(2, 0);
         assert_eq!(result, PressResult::Miss);
@@ -325,7 +345,11 @@ mod tests {
         // Tile at row 2 (occupies 2,3). Grace zone extends to row 1.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
+        game.tiles.push(Tile {
+            col: 1,
+            row: 2,
+            shade: 0,
+        });
 
         let result = game.press(1, 1);
         assert_eq!(result, PressResult::Hit);
@@ -336,7 +360,11 @@ mod tests {
         // Tile at row 2 (occupies 2,3). Grace zone extends to row 4.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
+        game.tiles.push(Tile {
+            col: 1,
+            row: 2,
+            shade: 0,
+        });
 
         let result = game.press(4, 1);
         assert_eq!(result, PressResult::Hit);
@@ -346,7 +374,11 @@ mod tests {
     fn test_press_no_tile_at_row_is_ignored() {
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 0, row: 1, shade: 0 });
+        game.tiles.push(Tile {
+            col: 0,
+            row: 1,
+            shade: 0,
+        });
 
         // Tile at row 1 (occupies 1,2), grace zone 0-3. Press at row 5 is outside.
         let result = game.press(5, 0);
@@ -429,7 +461,11 @@ mod tests {
     fn test_render_playing_shows_2row_tiles() {
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
+        game.tiles.push(Tile {
+            col: 1,
+            row: 2,
+            shade: 0,
+        });
 
         let grid = game.render();
         // Tile occupies row 2 and row 3, both in column 1's shade 0
@@ -446,8 +482,16 @@ mod tests {
     fn test_render_alternating_shades() {
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 0, row: 0, shade: 0 });
-        game.tiles.push(Tile { col: 0, row: 3, shade: 1 });
+        game.tiles.push(Tile {
+            col: 0,
+            row: 0,
+            shade: 0,
+        });
+        game.tiles.push(Tile {
+            col: 0,
+            row: 3,
+            shade: 1,
+        });
 
         let grid = game.render();
         // First tile (shade 0) at rows 0,1

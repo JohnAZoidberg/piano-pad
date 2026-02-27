@@ -199,8 +199,7 @@ fn find_beats_pitch(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
         band_energies.push(sub_band_energies(&samples[start..end]));
     }
 
-    let min_interval_frames =
-        (MIN_INTERVAL_SECS * sample_rate as f64 / HOP_SIZE as f64) as usize;
+    let min_interval_frames = (MIN_INTERVAL_SECS * sample_rate as f64 / HOP_SIZE as f64) as usize;
 
     // Detect onsets independently per band
     let mut beats = Vec::new();
@@ -352,21 +351,24 @@ fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
     eprintln!("Tempo: {bpm:.1} BPM (period: {period_secs:.3}s)");
 
     // Detect onsets using broadband energy
-    let min_interval_frames =
-        (MIN_INTERVAL_SECS * sample_rate as f64 / HOP_SIZE as f64) as usize;
-    let beat_times = detect_band_onsets(&{
-        // Recompute broadband energies (not onsets) for the onset detector
-        let num_frames = (samples.len() - FRAME_SIZE) / HOP_SIZE + 1;
-        let mut energies = Vec::with_capacity(num_frames);
-        for i in 0..num_frames {
-            let start = i * HOP_SIZE;
-            let end = start + FRAME_SIZE;
-            let energy: f32 =
-                samples[start..end].iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE as f32;
-            energies.push(energy);
-        }
-        energies
-    }, sample_rate, min_interval_frames);
+    let min_interval_frames = (MIN_INTERVAL_SECS * sample_rate as f64 / HOP_SIZE as f64) as usize;
+    let beat_times = detect_band_onsets(
+        &{
+            // Recompute broadband energies (not onsets) for the onset detector
+            let num_frames = (samples.len() - FRAME_SIZE) / HOP_SIZE + 1;
+            let mut energies = Vec::with_capacity(num_frames);
+            for i in 0..num_frames {
+                let start = i * HOP_SIZE;
+                let end = start + FRAME_SIZE;
+                let energy: f32 =
+                    samples[start..end].iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE as f32;
+                energies.push(energy);
+            }
+            energies
+        },
+        sample_rate,
+        min_interval_frames,
+    );
 
     // Classify each onset by metrical position
     beat_times
@@ -580,7 +582,10 @@ mod tests {
             .windows(2)
             .filter(|w| (w[1].time - w[0].time) < MIN_INTERVAL_SECS)
             .count();
-        assert_eq!(close_pairs, 0, "No two beats should be closer than MIN_INTERVAL");
+        assert_eq!(
+            close_pairs, 0,
+            "No two beats should be closer than MIN_INTERVAL"
+        );
     }
 
     #[test]
@@ -592,7 +597,10 @@ mod tests {
         insert_tone_burst(&mut samples, 5.0, 8000.0, 0.9, FRAME_SIZE * 2);
         let beats = find_beats_pitch(&samples, SAMPLE_RATE);
         for window in beats.windows(2) {
-            assert!(window[0].time < window[1].time, "Beats should be sorted by time");
+            assert!(
+                window[0].time < window[1].time,
+                "Beats should be sorted by time"
+            );
         }
     }
 
@@ -700,14 +708,14 @@ mod tests {
     #[test]
     fn test_deoverlap_reassigns_close_same_col() {
         // Two beats in col 0, only 0.2s apart — second should be reassigned
-        let beats = vec![
-            Beat { time: 0.0, col: 0 },
-            Beat { time: 0.2, col: 0 },
-        ];
+        let beats = vec![Beat { time: 0.0, col: 0 }, Beat { time: 0.2, col: 0 }];
         let result = deoverlap(beats);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].col, 0);
-        assert_ne!(result[1].col, 0, "Close beat should be moved to another column");
+        assert_ne!(
+            result[1].col, 0,
+            "Close beat should be moved to another column"
+        );
     }
 
     #[test]
@@ -735,7 +743,11 @@ mod tests {
             .collect();
         let result = deoverlap(beats);
         for col in 0..COLS {
-            let col_times: Vec<f64> = result.iter().filter(|b| b.col == col).map(|b| b.time).collect();
+            let col_times: Vec<f64> = result
+                .iter()
+                .filter(|b| b.col == col)
+                .map(|b| b.time)
+                .collect();
             for pair in col_times.windows(2) {
                 assert!(
                     pair[1] - pair[0] >= MIN_SAME_COL_SECS,
