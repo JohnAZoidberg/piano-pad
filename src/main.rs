@@ -21,7 +21,6 @@ use lamparray::{Color, LampArray};
 const POLL_TIMEOUT: Duration = Duration::from_millis(5);
 const FLASH_DURATION: Duration = Duration::from_millis(250);
 
-const FLASH_HIT: Color = Color::new(255, 255, 255);
 const FLASH_MISS: Color = Color::new(255, 0, 0);
 
 struct Flash {
@@ -30,20 +29,6 @@ struct Flash {
 }
 
 impl Flash {
-    fn hit(row: usize, col: usize) -> Self {
-        let mut cells = vec![(row, col, FLASH_HIT)];
-        if row + 1 < 6 {
-            cells.push((row + 1, col, FLASH_HIT));
-        }
-        if row > 0 {
-            cells.push((row - 1, col, FLASH_HIT));
-        }
-        Self {
-            cells,
-            until: Instant::now() + FLASH_DURATION,
-        }
-    }
-
     fn miss_press(row: usize, col: usize) -> Self {
         Self {
             cells: vec![(row, col, FLASH_MISS)],
@@ -273,7 +258,6 @@ fn run() -> Result<()> {
                         let result = game.press(row, col);
                         match result {
                             PressResult::Hit => {
-                                flash = Some(Flash::hit(row, col));
                                 print_debug(&format!(
                                     "HIT  row={row} col={col}  score={}/{}",
                                     game.score, game.total_beats

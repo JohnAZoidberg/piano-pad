@@ -130,17 +130,21 @@ impl Game {
         dropped
     }
 
-    /// Handle a key press at (row, col). Matches any tile whose 2-row span includes the pressed row.
+    /// Handle a key press at (row, col). Matches any tile whose visual span overlaps the
+    /// pressed row, with a one-row grace zone above and below to account for timing between
+    /// render and keypress.
     pub fn press(&mut self, row: usize, col: usize) -> PressResult {
         if self.state != State::Playing {
             return PressResult::Ignored;
         }
 
-        // Look for a tile in this column whose 2-row span includes the pressed row
+        // Tile occupies tile.row and tile.row+1. Accept presses one row above or below
+        // that span to account for tick timing (tile may have moved since last render).
+        // So: accept if pressed_row is within tile.row-1 ..= tile.row+2
         if let Some(idx) = self
             .tiles
             .iter()
-            .position(|t| t.col == col && (t.row == row || t.row + 1 == row))
+            .position(|t| t.col == col && row + 1 >= t.row && row <= t.row + 2)
         {
             self.tiles.remove(idx);
             self.score += 1;
@@ -148,13 +152,13 @@ impl Game {
         } else if self
             .tiles
             .iter()
-            .any(|t| t.row == row || t.row + 1 == row)
+            .any(|t| row + 1 >= t.row && row <= t.row + 2)
         {
-            // A tile is at this row but wrong column → miss
+            // A tile is nearby at this row but wrong column → miss
             self.misses += 1;
             PressResult::Miss
         } else {
-            // No tiles at this row → lenient ignore
+            // No tiles near this row → lenient ignore
             PressResult::Ignored
         }
     }
@@ -315,13 +319,35 @@ mod tests {
     }
 
     #[test]
+    fn test_press_grace_zone_above() {
+        // Tile at row 2 (occupies 2,3). Grace zone extends to row 1.
+        let mut game = Game::new(vec![]);
+        game.state = State::Playing;
+        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
+
+        let result = game.press(1, 1);
+        assert_eq!(result, PressResult::Hit);
+    }
+
+    #[test]
+    fn test_press_grace_zone_below() {
+        // Tile at row 2 (occupies 2,3). Grace zone extends to row 4.
+        let mut game = Game::new(vec![]);
+        game.state = State::Playing;
+        game.tiles.push(Tile { col: 1, row: 2, shade: 0 });
+
+        let result = game.press(4, 1);
+        assert_eq!(result, PressResult::Hit);
+    }
+
+    #[test]
     fn test_press_no_tile_at_row_is_ignored() {
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
         game.tiles.push(Tile { col: 0, row: 1, shade: 0 });
 
-        // Press at row 4 where there's no tile
-        let result = game.press(4, 0);
+        // Tile at row 1 (occupies 1,2), grace zone 0-3. Press at row 5 is outside.
+        let result = game.press(5, 0);
         assert_eq!(result, PressResult::Ignored);
     }
 
