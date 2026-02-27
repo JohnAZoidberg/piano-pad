@@ -1,36 +1,47 @@
 # Piano Pad
 
 A beat-synced rhythm game for the Framework Laptop 16 macropad. Tiles scroll
-down the 6×4 LED grid in time with an MP3's beats — press the right key when
-the tile reaches the bottom two rows.
+down the 6×4 LED grid in time with an MP3's beats — press the matching key
+when a tile is near you.
 
 ## How It Works
 
-1. **Beat analysis** — On startup the game decodes the MP3, runs energy-based
-   onset detection, and builds a list of beat timestamps.
+1. **Beat analysis** — On startup the game decodes the MP3 with ffmpeg and
+   detects beats. Two analysis modes are available:
+   - **Pitch** (default) — FFT sub-band analysis assigns columns by frequency
+     band (bass, low-mid, mid-high, high).
+   - **Rhythm** (`--rhythm`) — Estimates tempo via autocorrelation, then
+     classifies beats by metrical position (downbeat, offbeat, 16th note,
+     syncopation).
 2. **Song playback** — The actual song plays through your speakers, starting
    after a short delay so the first tiles have time to scroll into view.
 3. **Tile scrolling** — Each beat spawns a 2-row-tall tile at the top of the
    grid. Tiles scroll down at a constant speed (one row per 200ms tick).
-4. **Hit zone** — The bottom two rows (rows 4 and 5) are the hit zone. When a
-   tile reaches this zone you have 400ms (2 ticks) to press the matching
-   column key.
+   Each column has two alternating shades so consecutive tiles are visually
+   distinct.
+4. **Pressing tiles** — Press the matching column key on any row where you can
+   see the tile. There is a one-row grace zone above and below to account for
+   timing.
 5. **Scoring** — Successful hits increment your score. Missed tiles (wrong key
-   or tile scrolls past) count as misses. The song keeps playing either way —
-   no game-over interruption.
+   or tile scrolls off the bottom) count as misses. The song keeps playing
+   either way — no game-over interruption.
 6. **Song complete** — After all beats have scrolled through, the grid turns
    green and your final score is shown.
 
 ## Controls
 
-The macropad's bottom two rows of keys map to columns 0-3:
+All macropad keys (A–X) are mapped to a 6×4 grid:
 
 | Row | Col 0 | Col 1 | Col 2 | Col 3 |
 |-----|-------|-------|-------|-------|
+| 0   | A     | B     | C     | D     |
+| 1   | E     | F     | G     | H     |
+| 2   | I     | J     | K     | L     |
+| 3   | M     | N     | O     | P     |
 | 4   | Q     | R     | S     | T     |
 | 5   | U     | V     | W     | X     |
 
-Both rows hit the same columns — press whichever row is more comfortable.
+Press the key in the correct column wherever the tile is on the grid.
 
 - **Esc** or **Ctrl+C** — quit
 - **Any key** on the Ready/Complete screen — start or restart
@@ -46,6 +57,9 @@ mkdir songs
 cp song.mp3 songs/
 cargo run
 
+# Use rhythm-based column assignment instead of pitch-based
+cargo run -- --rhythm
+
 # Slow it down to half speed for practice
 cargo run -- --speed 0.5
 
@@ -53,11 +67,21 @@ cargo run -- --speed 0.5
 cargo run -- --skip-intro
 
 # Combine options
-cargo run -- --speed 0.75 --skip-intro path/to/song.mp3
+cargo run -- --speed 0.75 --skip-intro --rhythm path/to/song.mp3
+```
+
+### Analyze tool
+
+A diagnostic tool for inspecting beat detection results:
+
+```
+cargo run --bin analyze -- songs/song.mp3
+cargo run --bin analyze -- --rhythm songs/song.mp3
 ```
 
 ## Requirements
 
 - Framework Laptop 16 with LED macropad module
+- **ffmpeg** — used for audio decoding (must be in `$PATH`)
 - Rust toolchain
 - Linux (HID access — may need `udev` rules or root)
