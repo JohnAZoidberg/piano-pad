@@ -85,6 +85,19 @@ cargo run --bin analyze -- songs/song.mp3
 cargo run --bin analyze -- --rhythm songs/song.mp3
 ```
 
+### Sync test tool
+
+Simulates the game's tick model without hardware or audio and measures how
+closely each tile's arrival at the hit zone matches its beat's song time.
+Reports mean/max error, standard deviation, and a per-column breakdown.
+Prints `PASS` if all beats land within one tick (200ms — the theoretical
+quantization limit), `FAIL` otherwise with details of the worst offenders.
+
+```
+cargo run --bin sync_test -- songs/song.mp3
+cargo run --bin sync_test -- --rhythm songs/song.mp3
+```
+
 ## Requirements
 
 - Framework Laptop 16 with LED macropad module (or use `--no-pad` to run without it)

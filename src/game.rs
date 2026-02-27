@@ -7,7 +7,7 @@ const ROWS: usize = 6;
 pub const TICK_MS: u64 = 200;
 const SCROLL_TICKS: usize = 4; // tiles travel from row 0 to row 4 (2-row tile fills rows 4-5)
 /// Song start delay: SCROLL_TICKS ticks for the tile to travel from row 0 to the hit zone,
-/// plus 1 tick because the first game tick fires one tick_duration after game start.
+/// plus 1 tick because the first game tick fires one tick_duration after song start.
 pub const SCROLL_DELAY_MS: u64 = TICK_MS * (SCROLL_TICKS + 1) as u64;
 
 /// Two shades per column so consecutive tiles are visually distinct.
@@ -450,9 +450,9 @@ mod tests {
             assert_ne!(grid[5][col], Color::BLACK);
         }
         // Other rows should be black
-        for row in 0..4 {
-            for col in 0..4 {
-                assert_eq!(grid[row][col], Color::BLACK);
+        for row in grid.iter().take(4) {
+            for color in row {
+                assert_eq!(*color, Color::BLACK);
             }
         }
     }

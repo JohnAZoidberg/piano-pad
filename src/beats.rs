@@ -356,9 +356,9 @@ fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
     // Eighth notes:  offset P/2  (halfway between beats)
     // Sixteenth notes: offsets P/4 and 3P/4  (between quarter and eighth positions)
     let levels: &[(&[f64], usize)] = &[
-        (&[0.0], 0),                                                           // quarter → col 0
-        (&[period_frames / 2.0], 1),                                           // eighth → col 1
-        (&[period_frames / 4.0, period_frames * 3.0 / 4.0], 2),               // sixteenth → col 2
+        (&[0.0], 0),                                            // quarter → col 0
+        (&[period_frames / 2.0], 1),                            // eighth → col 1
+        (&[period_frames / 4.0, period_frames * 3.0 / 4.0], 2), // sixteenth → col 2
     ];
 
     for &(offsets, col) in levels {
@@ -413,7 +413,9 @@ fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
                 }
             }
             let time = f as f64 / frames_per_sec;
-            let too_close = beats.iter().any(|b| (b.time - time).abs() < MIN_INTERVAL_SECS);
+            let too_close = beats
+                .iter()
+                .any(|b| (b.time - time).abs() < MIN_INTERVAL_SECS);
             if !too_close {
                 beats.push(Beat { time, col: 3 });
                 last_sync_frame = Some(f);
@@ -506,9 +508,9 @@ mod tests {
         let center = (time_secs * SAMPLE_RATE as f64) as usize;
         let start = center.saturating_sub(duration_samples / 2);
         let end = (start + duration_samples).min(samples.len());
-        for i in start..end {
-            let t = (i - start) as f32 / SAMPLE_RATE as f32;
-            samples[i] += amplitude * (freq * 2.0 * PI * t).sin();
+        for (i, sample) in samples[start..end].iter_mut().enumerate() {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            *sample += amplitude * (freq * 2.0 * PI * t).sin();
         }
     }
 
