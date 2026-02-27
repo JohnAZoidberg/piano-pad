@@ -10,20 +10,23 @@ use piano_pad::beats::{self, BeatMode};
 use std::path::PathBuf;
 
 const ROWS: usize = 6;
-const TICK_MS: u64 = 200;
+const TICK_MS: u64 = 50;
+const TICKS_PER_MOVE: usize = 4;
 const SCROLL_TICKS: usize = 4;
 
 const PITCH_NAMES: [&str; 4] = ["bass", "low-mid", "mid-high", "high"];
 const RHYTHM_NAMES: [&str; 4] = ["downbeat", "offbeat", "16th", "syncopation"];
 
-/// Maximum acceptable sync error (one tick — the theoretical quantization limit).
+/// Maximum acceptable sync error (one sim-tick — the theoretical quantization limit).
 /// Beats are spawned on the first tick at or after their time, so they can be
 /// up to one tick late. Errors beyond this indicate a simulation bug.
-const TOLERANCE_SECS: f64 = TICK_MS as f64 / 1000.0;
+const TOLERANCE_SECS: f64 = TICK_MS as f64 / 1000.0; // 50ms
 
 struct SimTile {
     row: usize,
     beat_idx: usize,
+    move_counter: usize,
+    arrived: bool, // true once tile has reached the hit zone (record sync error only once)
 }
 
 fn main() -> Result<()> {
@@ -59,11 +62,9 @@ fn main() -> Result<()> {
 
     let total_beats = beats.len();
 
-    // Simulate the game tick loop.
-    // pre_ticks matches SCROLL_DELAY_MS / TICK_MS = SCROLL_TICKS + 1 = 5.
-    // The extra +1 accounts for the first real game tick firing one tick_duration
-    // AFTER the song starts (the game loop waits before its first tick).
-    let pre_ticks = SCROLL_TICKS + 1;
+    // Simulate the game tick loop with per-tile sub-tick counters.
+    // pre_ticks matches SCROLL_DELAY_MS / TICK_MS = SCROLL_TICKS * TICKS_PER_MOVE + 1.
+    let pre_ticks = SCROLL_TICKS * TICKS_PER_MOVE + 1;
     let mut tiles: Vec<SimTile> = Vec::new();
     let mut next_beat_idx: usize = 0;
 
@@ -71,27 +72,31 @@ fn main() -> Result<()> {
     let mut sync_errors: Vec<(usize, f64)> = Vec::new(); // (beat_idx, error)
 
     // Run pre-ticks + enough ticks for all beats to scroll through
-    let max_ticks =
-        pre_ticks + ((beats.last().unwrap().time * 1000.0 / TICK_MS as f64) as usize) + ROWS + 10;
+    let max_ticks = pre_ticks
+        + ((beats.last().unwrap().time * 1000.0 / TICK_MS as f64) as usize)
+        + ROWS * TICKS_PER_MOVE
+        + 10;
 
     for tick in 0..max_ticks {
-        // Game's tick order: move → remove → spawn → increment
-        // We check arrivals after move, before remove.
+        // Game's tick order: per-tile move → check arrivals → remove → spawn → increment
+        // Each tile has its own move counter for deterministic travel time.
 
-        // 1. Move all tiles down one row
+        // 1. Advance each tile's personal move counter; move when it wraps
         for tile in &mut tiles {
-            tile.row += 1;
+            tile.move_counter += 1;
+            if tile.move_counter >= TICKS_PER_MOVE {
+                tile.move_counter = 0;
+                tile.row += 1;
+            }
         }
 
-        // 2. Check for tiles at row SCROLL_TICKS (first row of hit zone) — record sync error.
-        //    In the real game, ticks 0..pre_ticks run instantly (pre-simulation), then the
-        //    song starts and the first real tick fires after one tick_duration. So:
-        //      song_time at tick T = (T - pre_ticks + 1) * TICK_MS/1000  for T >= pre_ticks
-        //    During pre-ticks (T < pre_ticks), song hasn't started yet.
+        // 2. Check for tiles that just reached row SCROLL_TICKS (hit zone).
+        //    song_time at tick T = (T - pre_ticks + 1) * TICK_MS/1000  for T >= pre_ticks
         if tick >= pre_ticks {
             let song_time = (tick - pre_ticks + 1) as f64 * TICK_MS as f64 / 1000.0;
-            for tile in &tiles {
-                if tile.row == SCROLL_TICKS {
+            for tile in &mut tiles {
+                if tile.row == SCROLL_TICKS && !tile.arrived {
+                    tile.arrived = true;
                     let beat_time = beats[tile.beat_idx].time;
                     let error = song_time - beat_time;
                     sync_errors.push((tile.beat_idx, error));
@@ -103,13 +108,15 @@ fn main() -> Result<()> {
         tiles.retain(|t| t.row + 1 < ROWS);
 
         // 4. Spawn tiles whose beat.time <= tick * TICK_MS / 1000
-        //    (elapsed_ticks == tick at this point, incremented after spawn in game.rs)
+        //    (runs every tick at full 50ms resolution)
         let elapsed_secs = tick as f64 * TICK_MS as f64 / 1000.0;
         while next_beat_idx < beats.len() {
             if beats[next_beat_idx].time <= elapsed_secs {
                 tiles.push(SimTile {
                     row: 0,
                     beat_idx: next_beat_idx,
+                    move_counter: 0,
+                    arrived: false,
                 });
                 next_beat_idx += 1;
             } else {

@@ -4,11 +4,12 @@ use crate::lamparray::Color;
 const COLS: usize = 4;
 const ROWS: usize = 6;
 
-pub const TICK_MS: u64 = 200;
+pub const TICK_MS: u64 = 50; // simulation rate (was 200)
+const TICKS_PER_MOVE: usize = 4; // tiles move once per 4 ticks (visual scroll every 200ms)
 const SCROLL_TICKS: usize = 4; // tiles travel from row 0 to row 4 (2-row tile fills rows 4-5)
-/// Song start delay: SCROLL_TICKS ticks for the tile to travel from row 0 to the hit zone,
-/// plus 1 tick because the first game tick fires one tick_duration after song start.
-pub const SCROLL_DELAY_MS: u64 = TICK_MS * (SCROLL_TICKS + 1) as u64;
+/// Song start delay: SCROLL_TICKS * TICKS_PER_MOVE sim-ticks to scroll from spawn to hit zone,
+/// plus 1 for the first-tick delay.
+pub const SCROLL_DELAY_MS: u64 = TICK_MS * (SCROLL_TICKS as u64 * TICKS_PER_MOVE as u64 + 1);
 
 /// Two shades per column so consecutive tiles are visually distinct.
 const COL_SHADES: [[Color; 2]; COLS] = [
@@ -23,6 +24,7 @@ struct Tile {
     col: usize,
     row: usize,
     shade: u8,
+    move_counter: usize, // per-tile sub-tick counter; tile moves when this wraps at TICKS_PER_MOVE
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,14 +92,23 @@ impl Game {
     }
 
     /// Advance one game tick. Returns the number of tiles that fell off (missed).
+    ///
+    /// Ticks run at 50ms (TICK_MS). Each tile has its own move counter and advances
+    /// one row every TICKS_PER_MOVE ticks, giving every tile a deterministic travel
+    /// time of SCROLL_TICKS * TICKS_PER_MOVE sub-ticks from spawn to hit zone.
+    /// Beat spawning runs every tick at full 50ms resolution for tight sync.
     pub fn tick(&mut self) -> u32 {
         if self.state != State::Playing {
             return 0;
         }
 
-        // 1. Move all tiles down one row
+        // 1. Advance each tile's personal move counter; move when it wraps
         for tile in &mut self.tiles {
-            tile.row += 1;
+            tile.move_counter += 1;
+            if tile.move_counter >= TICKS_PER_MOVE {
+                tile.move_counter = 0;
+                tile.row += 1;
+            }
         }
 
         // 2. Remove tiles that fell past the grid (missed beats)
@@ -107,6 +118,7 @@ impl Game {
         self.misses += dropped;
 
         // 3. Spawn tiles whose beat.time <= elapsed_ticks * TICK_MS / 1000
+        //    (runs every tick at full 50ms resolution)
         let elapsed_secs = self.elapsed_ticks as f64 * TICK_MS as f64 / 1000.0;
         while self.next_beat_idx < self.beats.len() {
             if self.beats[self.next_beat_idx].time <= elapsed_secs {
@@ -114,7 +126,12 @@ impl Game {
                 let col = beat.col;
                 let shade = self.col_shade_counter[col] % 2;
                 self.col_shade_counter[col] = self.col_shade_counter[col].wrapping_add(1);
-                self.tiles.push(Tile { col, row: 0, shade });
+                self.tiles.push(Tile {
+                    col,
+                    row: 0,
+                    shade,
+                    move_counter: 0,
+                });
                 self.next_beat_idx += 1;
             } else {
                 break;
@@ -247,7 +264,7 @@ mod tests {
         let mut game = Game::new(beats);
         game.start();
 
-        // First tick: moves tiles (none yet), spawns beat at time 0.0, increments elapsed
+        // First tick: spawns beat at time 0.0 (tile doesn't move until TICKS_PER_MOVE ticks)
         game.tick();
         assert_eq!(game.tiles.len(), 1);
         assert_eq!(game.tiles[0].row, 0);
@@ -265,9 +282,14 @@ mod tests {
             col: 0,
             row: 4,
             shade: 0,
+            move_counter: 0,
         });
 
-        let dropped = game.tick();
+        // Need TICKS_PER_MOVE ticks to trigger a move
+        let mut dropped = 0;
+        for _ in 0..TICKS_PER_MOVE {
+            dropped += game.tick();
+        }
         assert_eq!(dropped, 1);
         assert!(game.tiles.is_empty());
         assert_eq!(game.misses, 1);
@@ -283,6 +305,7 @@ mod tests {
             col: 2,
             row: 3,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(3, 2);
@@ -300,6 +323,7 @@ mod tests {
             col: 2,
             row: 3,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(4, 2);
@@ -316,6 +340,7 @@ mod tests {
             col: 1,
             row: 0,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(1, 1);
@@ -332,6 +357,7 @@ mod tests {
             col: 2,
             row: 2,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(2, 0);
@@ -349,6 +375,7 @@ mod tests {
             col: 1,
             row: 2,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(1, 1);
@@ -364,6 +391,7 @@ mod tests {
             col: 1,
             row: 2,
             shade: 0,
+            move_counter: 0,
         });
 
         let result = game.press(4, 1);
@@ -378,6 +406,7 @@ mod tests {
             col: 0,
             row: 1,
             shade: 0,
+            move_counter: 0,
         });
 
         // Tile at row 1 (occupies 1,2), grace zone 0-3. Press at row 5 is outside.
@@ -392,14 +421,16 @@ mod tests {
         let mut game = Game::new(beats);
         game.start();
 
-        // Tick 1: spawn beat at row 0 (occupies 0,1)
+        // First tick: spawn beat at row 0 (occupies 0,1)
         game.tick();
         assert_eq!(game.tiles.len(), 1);
 
         // Move to row 3 (occupies 3,4 — partially in hit zone)
-        game.tick(); // row 1
-        game.tick(); // row 2
-        game.tick(); // row 3
+        // Each visual row requires TICKS_PER_MOVE sub-ticks
+        for _ in 0..3 * TICKS_PER_MOVE {
+            game.tick();
+        }
+        assert_eq!(game.tiles[0].row, 3);
 
         // Hit it (tile is at row 3, occupying rows 3-4)
         let col = game.tiles[0].col;
@@ -419,8 +450,10 @@ mod tests {
         let mut game = Game::new(beats);
         game.start();
 
-        // Tick through until tile falls off
-        for _ in 0..6 {
+        // Tick through until tile falls off: tile spawns at row 0, needs 5 moves
+        // to reach row 5 (off-grid). Each move is TICKS_PER_MOVE ticks, plus the
+        // initial tick that spawned it.
+        for _ in 0..5 * TICKS_PER_MOVE + 1 {
             game.tick();
         }
 
@@ -465,6 +498,7 @@ mod tests {
             col: 1,
             row: 2,
             shade: 0,
+            move_counter: 0,
         });
 
         let grid = game.render();
@@ -486,11 +520,13 @@ mod tests {
             col: 0,
             row: 0,
             shade: 0,
+            move_counter: 0,
         });
         game.tiles.push(Tile {
             col: 0,
             row: 3,
             shade: 1,
+            move_counter: 0,
         });
 
         let grid = game.render();

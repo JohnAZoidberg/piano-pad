@@ -428,8 +428,9 @@ fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
 }
 
 /// Minimum time (seconds) between two beats in the same column.
-/// Tiles are 2 rows tall and scroll 1 row per tick (200ms), so tiles in the same
-/// column need at least 3 ticks (600ms) of spacing to never overlap visually.
+/// Tiles are 2 rows tall and scroll 1 row every TICKS_PER_MOVE sim-ticks (200ms
+/// wall-clock), so tiles in the same column need at least 3 visual moves (600ms)
+/// of spacing to never overlap.
 const MIN_SAME_COL_SECS: f64 = 0.6;
 
 /// Enforce per-column minimum spacing. When two beats in the same column are too
