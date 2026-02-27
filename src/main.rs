@@ -29,16 +29,23 @@ struct Flash {
 }
 
 impl Flash {
-    fn hit(col: usize) -> Self {
+    fn hit(row: usize, col: usize) -> Self {
+        let mut cells = vec![(row, col, FLASH_HIT)];
+        if row + 1 < 6 {
+            cells.push((row + 1, col, FLASH_HIT));
+        }
+        if row > 0 {
+            cells.push((row - 1, col, FLASH_HIT));
+        }
         Self {
-            cells: vec![(4, col, FLASH_HIT), (5, col, FLASH_HIT)],
+            cells,
             until: Instant::now() + FLASH_DURATION,
         }
     }
 
-    fn miss_press(col: usize) -> Self {
+    fn miss_press(row: usize, col: usize) -> Self {
         Self {
-            cells: vec![(4, col, FLASH_MISS), (5, col, FLASH_MISS)],
+            cells: vec![(row, col, FLASH_MISS)],
             until: Instant::now() + FLASH_DURATION,
         }
     }
@@ -243,7 +250,7 @@ fn run() -> Result<()> {
             match game.state {
                 State::Ready => match input {
                     GameInput::Quit => break,
-                    GameInput::AnyKey | GameInput::Column(_) => {
+                    GameInput::AnyKey | GameInput::Press(_, _) => {
                         game.start();
                         last_tick = Instant::now();
                         game_start_time = Instant::now();
@@ -255,22 +262,22 @@ fn run() -> Result<()> {
                 },
                 State::Playing => match input {
                     GameInput::Quit => break,
-                    GameInput::Column(col) => {
-                        let result = game.press(col);
+                    GameInput::Press(row, col) => {
+                        let result = game.press(row, col);
                         match result {
                             PressResult::Hit => {
-                                flash = Some(Flash::hit(col));
+                                flash = Some(Flash::hit(row, col));
                                 print_debug(&format!(
-                                    "HIT  col={col}  score={}/{}",
+                                    "HIT  row={row} col={col}  score={}/{}",
                                     game.score, game.total_beats
                                 ));
                                 dirty = true;
                                 print_status(&game);
                             }
                             PressResult::Miss => {
-                                flash = Some(Flash::miss_press(col));
+                                flash = Some(Flash::miss_press(row, col));
                                 print_debug(&format!(
-                                    "MISS col={col}  misses={}",
+                                    "MISS row={row} col={col}  misses={}",
                                     game.misses
                                 ));
                                 dirty = true;
@@ -283,7 +290,7 @@ fn run() -> Result<()> {
                 },
                 State::SongComplete => match input {
                     GameInput::Quit => break,
-                    GameInput::AnyKey | GameInput::Column(_) => {
+                    GameInput::AnyKey | GameInput::Press(_, _) => {
                         game.reset();
                         song_started = false;
                         flash = None;

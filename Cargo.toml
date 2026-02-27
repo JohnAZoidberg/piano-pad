@@ -2,6 +2,7 @@
 name = "piano-pad"
 version = "0.1.0"
 edition = "2021"
+default-run = "piano-pad"
 
 [dependencies]
 hidapi = "2.6"

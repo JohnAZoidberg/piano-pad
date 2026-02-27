@@ -1,14 +1,52 @@
-use anyhow::Result;
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
-use std::fs::File;
-use std::io::BufReader;
+use anyhow::{Context, Result};
+use rodio::buffer::SamplesBuffer;
+use rodio::{OutputStream, OutputStreamHandle, Sink};
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
+
+const SAMPLE_RATE: u32 = 44100;
+const CHANNELS: u16 = 2;
 
 pub struct Audio {
     _stream: OutputStream,
     handle: OutputStreamHandle,
     song_sink: Option<Sink>,
+}
+
+/// Decode audio to stereo f32 samples at 44100 Hz using ffmpeg.
+fn decode_song(path: &Path) -> Result<Vec<f32>> {
+    let output = Command::new("ffmpeg")
+        .args([
+            "-i",
+            path.to_str().context("Non-UTF8 path")?,
+            "-f",
+            "f32le",
+            "-acodec",
+            "pcm_f32le",
+            "-ac",
+            &CHANNELS.to_string(),
+            "-ar",
+            &SAMPLE_RATE.to_string(),
+            "-",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .context("Failed to run ffmpeg — is it installed?")?;
+
+    if !output.status.success() {
+        anyhow::bail!("ffmpeg failed to decode audio");
+    }
+
+    let bytes = &output.stdout;
+    let samples: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect();
+
+    Ok(samples)
 }
 
 impl Audio {
@@ -22,11 +60,10 @@ impl Audio {
         })
     }
 
-    /// Start playing the song MP3 file at the given speed, optionally seeking forward.
+    /// Start playing the song at the given speed, optionally seeking forward.
     pub fn play_song(&mut self, path: &Path, speed: f32, seek: Duration) -> Result<()> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-        let source = Decoder::new(reader)?;
+        let samples = decode_song(path)?;
+        let source = SamplesBuffer::new(CHANNELS, SAMPLE_RATE, samples);
         let sink = Sink::try_new(&self.handle)?;
         sink.set_speed(speed);
         sink.append(source);

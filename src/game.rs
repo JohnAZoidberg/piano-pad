@@ -130,17 +130,17 @@ impl Game {
         dropped
     }
 
-    /// Handle a column press. Matches any tile in the hit zone for that column.
-    pub fn press(&mut self, col: usize) -> PressResult {
+    /// Handle a key press at (row, col). Matches any tile whose 2-row span includes the pressed row.
+    pub fn press(&mut self, row: usize, col: usize) -> PressResult {
         if self.state != State::Playing {
             return PressResult::Ignored;
         }
 
-        // Look for a tile in this column whose 2-row span overlaps the hit zone (rows 4-5)
+        // Look for a tile in this column whose 2-row span includes the pressed row
         if let Some(idx) = self
             .tiles
             .iter()
-            .position(|t| t.col == col && t.row + 1 >= 4 && t.row <= 4)
+            .position(|t| t.col == col && (t.row == row || t.row + 1 == row))
         {
             self.tiles.remove(idx);
             self.score += 1;
@@ -148,13 +148,13 @@ impl Game {
         } else if self
             .tiles
             .iter()
-            .any(|t| t.row + 1 >= 4 && t.row <= 4)
+            .any(|t| t.row == row || t.row + 1 == row)
         {
-            // A tile overlaps the hit zone but wrong column → miss
+            // A tile is at this row but wrong column → miss
             self.misses += 1;
             PressResult::Miss
         } else {
-            // No tiles in hit zone at all → lenient ignore
+            // No tiles at this row → lenient ignore
             PressResult::Ignored
         }
     }
@@ -266,49 +266,62 @@ mod tests {
 
     #[test]
     fn test_press_hit_at_row_3() {
-        // Tile at row 3 occupies rows 3,4 (overlaps hit zone). Column press should hit.
+        // Tile at row 3 occupies rows 3,4. Pressing row 3, col 2 should hit.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
         game.tiles.push(Tile { col: 2, row: 3, shade: 0 });
 
-        let result = game.press(2);
+        let result = game.press(3, 2);
         assert_eq!(result, PressResult::Hit);
         assert_eq!(game.score, 1);
         assert!(game.tiles.is_empty());
     }
 
     #[test]
-    fn test_press_hit_at_row_4() {
-        // Tile at row 4 occupies rows 4,5 (fully in hit zone). Column press should hit.
+    fn test_press_hit_at_bottom_of_tile() {
+        // Tile at row 3 occupies rows 3,4. Pressing row 4, col 2 should also hit.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 1, row: 4, shade: 0 });
+        game.tiles.push(Tile { col: 2, row: 3, shade: 0 });
 
-        let result = game.press(1);
+        let result = game.press(4, 2);
+        assert_eq!(result, PressResult::Hit);
+        assert_eq!(game.score, 1);
+    }
+
+    #[test]
+    fn test_press_hit_at_row_0() {
+        // Tile at row 0 occupies rows 0,1. Pressing row 1, col 1 should hit.
+        let mut game = Game::new(vec![]);
+        game.state = State::Playing;
+        game.tiles.push(Tile { col: 1, row: 0, shade: 0 });
+
+        let result = game.press(1, 1);
         assert_eq!(result, PressResult::Hit);
         assert_eq!(game.score, 1);
     }
 
     #[test]
     fn test_press_wrong_column_is_miss() {
-        // Tile at row 4 (occupies 4,5) is in hit zone. Wrong column → miss, but game continues.
+        // Tile at row 2 (occupies 2,3). Wrong column at same row → miss.
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
-        game.tiles.push(Tile { col: 2, row: 4, shade: 0 });
+        game.tiles.push(Tile { col: 2, row: 2, shade: 0 });
 
-        let result = game.press(0);
+        let result = game.press(2, 0);
         assert_eq!(result, PressResult::Miss);
         assert_eq!(game.misses, 1);
         assert_eq!(game.state, State::Playing);
     }
 
     #[test]
-    fn test_press_no_tile_in_hit_zone_is_ignored() {
+    fn test_press_no_tile_at_row_is_ignored() {
         let mut game = Game::new(vec![]);
         game.state = State::Playing;
         game.tiles.push(Tile { col: 0, row: 1, shade: 0 });
 
-        let result = game.press(0);
+        // Press at row 4 where there's no tile
+        let result = game.press(4, 0);
         assert_eq!(result, PressResult::Ignored);
     }
 
@@ -328,9 +341,10 @@ mod tests {
         game.tick(); // row 2
         game.tick(); // row 3
 
-        // Hit it (tile is in hit zone now)
+        // Hit it (tile is at row 3, occupying rows 3-4)
         let col = game.tiles[0].col;
-        let result = game.press(col);
+        let row = game.tiles[0].row;
+        let result = game.press(row, col);
         assert_eq!(result, PressResult::Hit);
 
         // Next tick should detect song complete (all beats spawned, no tiles)

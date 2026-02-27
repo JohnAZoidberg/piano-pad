@@ -3,8 +3,8 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameInput {
-    /// Player pressed a column key (0-3)
-    Column(usize),
+    /// Player pressed a macropad key at (row, col)
+    Press(usize, usize),
     /// Quit the game
     Quit,
     /// Any other key (used for "press to start" / "press to restart")
@@ -25,8 +25,8 @@ fn map_key(event: KeyEvent) -> Option<GameInput> {
         KeyCode::Char(c) => {
             let c = c.to_ascii_lowercase();
             if ('a'..='x').contains(&c) {
-                let col = (c as usize - 'a' as usize) % 4;
-                Some(GameInput::Column(col))
+                let idx = c as usize - 'a' as usize;
+                Some(GameInput::Press(idx / 4, idx % 4))
             } else {
                 Some(GameInput::AnyKey)
             }
