@@ -478,9 +478,9 @@ mod tests {
         let game = Game::new(vec![]);
         let grid = game.render();
         // Rows 4 and 5 should be lit
-        for col in 0..4 {
-            assert_ne!(grid[4][col], Color::BLACK);
-            assert_ne!(grid[5][col], Color::BLACK);
+        for (col4, col5) in grid[4].iter().zip(grid[5].iter()) {
+            assert_ne!(*col4, Color::BLACK);
+            assert_ne!(*col5, Color::BLACK);
         }
         // Other rows should be black
         for row in grid.iter().take(4) {
