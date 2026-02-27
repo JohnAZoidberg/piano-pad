@@ -15,8 +15,6 @@ const SAMPLE_RATE: u32 = 44100;
 /// BPM range for tempo estimation.
 const MIN_BPM: f64 = 60.0;
 const MAX_BPM: f64 = 200.0;
-/// Tolerance for metrical grid classification (fraction of one beat period).
-const GRID_TOLERANCE: f64 = 0.12;
 
 /// Frequency band boundaries in FFT bins (for FRAME_SIZE=1024, SAMPLE_RATE=44100).
 /// Band 0 (bass):     0–200 Hz   → bins 0..5
@@ -308,30 +306,13 @@ fn estimate_phase(onsets: &[f32], period: f64) -> f64 {
     best_phase as f64
 }
 
-/// Classify a beat time by its position on the metrical grid.
-/// Returns column: 0=downbeat, 1=offbeat (eighth), 2=subdivision (sixteenth), 3=syncopation.
-fn classify_metrical(time: f64, period_secs: f64, phase_secs: f64) -> usize {
-    let relative = ((time - phase_secs) % period_secs + period_secs) % period_secs;
-    let fraction = relative / period_secs; // 0.0 .. 1.0
-
-    // Quarter note (downbeat): fraction near 0 or 1
-    if !(GRID_TOLERANCE..=(1.0 - GRID_TOLERANCE)).contains(&fraction) {
-        return 0;
-    }
-    // Eighth note offbeat: fraction near 0.5
-    if (fraction - 0.5).abs() < GRID_TOLERANCE {
-        return 1;
-    }
-    // Sixteenth note: fraction near 0.25 or 0.75
-    if (fraction - 0.25).abs() < GRID_TOLERANCE || (fraction - 0.75).abs() < GRID_TOLERANCE {
-        return 2;
-    }
-    // Everything else: triplets, syncopation
-    3
-}
-
-/// Detect beats with rhythm-based column assignment.
-/// Estimates tempo, then classifies each onset by its metrical position.
+/// Detect beats using rhythmic hierarchy analysis.
+/// Estimates tempo, then scans grid-aligned positions at each subdivision level.
+/// Columns represent hierarchy levels (coarser levels take priority):
+///   0 = quarter note (beat), 1 = eighth note (offbeat),
+///   2 = sixteenth note, 3 = syncopation (off-grid).
+///
+/// Beat times are grid-aligned so they stay perfectly in sync with the music.
 fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
     let (_, onsets) = broadband_onsets(samples);
     if onsets.is_empty() {
@@ -344,40 +325,104 @@ fn find_beats_rhythm(samples: &[f32], sample_rate: u32) -> Vec<Beat> {
     };
 
     let phase_frames = estimate_phase(&onsets, period_frames);
-    let period_secs = period_frames * HOP_SIZE as f64 / sample_rate as f64;
-    let phase_secs = phase_frames * HOP_SIZE as f64 / sample_rate as f64;
+    let frames_per_sec = sample_rate as f64 / HOP_SIZE as f64;
+    let period_secs = period_frames / frames_per_sec;
     let bpm = 60.0 / period_secs;
+    let duration_frames = onsets.len();
 
     eprintln!("Tempo: {bpm:.1} BPM (period: {period_secs:.3}s)");
 
-    // Detect onsets using broadband energy
-    let min_interval_frames = (MIN_INTERVAL_SECS * sample_rate as f64 / HOP_SIZE as f64) as usize;
-    let beat_times = detect_band_onsets(
-        &{
-            // Recompute broadband energies (not onsets) for the onset detector
-            let num_frames = (samples.len() - FRAME_SIZE) / HOP_SIZE + 1;
-            let mut energies = Vec::with_capacity(num_frames);
-            for i in 0..num_frames {
-                let start = i * HOP_SIZE;
-                let end = start + FRAME_SIZE;
-                let energy: f32 =
-                    samples[start..end].iter().map(|s| s * s).sum::<f32>() / FRAME_SIZE as f32;
-                energies.push(energy);
-            }
-            energies
-        },
-        sample_rate,
-        min_interval_frames,
-    );
-
-    // Classify each onset by metrical position
-    beat_times
-        .into_iter()
-        .map(|time| Beat {
-            time,
-            col: classify_metrical(time, period_secs, phase_secs),
+    // Adaptive onset threshold per frame (same method as detect_band_onsets)
+    let thresholds: Vec<f32> = (0..duration_frames)
+        .map(|i| {
+            let win_start = i.saturating_sub(THRESHOLD_WINDOW);
+            let win_end = (i + THRESHOLD_WINDOW + 1).min(duration_frames);
+            let local_mean: f32 =
+                onsets[win_start..win_end].iter().sum::<f32>() / (win_end - win_start) as f32;
+            (local_mean * THRESHOLD_MULTIPLIER).max(THRESHOLD_FLOOR)
         })
-        .collect()
+        .collect();
+
+    // Search tolerance: how far from a grid position to look for an onset.
+    // 30% of a sixteenth note period, so onsets snap to the nearest grid position.
+    let tolerance = (period_frames / 4.0 * 0.3).max(1.0) as usize;
+
+    // Track which onset frames have been claimed by a coarser level
+    let mut claimed = vec![false; duration_frames];
+    let mut beats = Vec::new();
+
+    // Each hierarchy level defines unique grid offsets within one beat period.
+    // Quarter notes: offset 0  (the beat itself)
+    // Eighth notes:  offset P/2  (halfway between beats)
+    // Sixteenth notes: offsets P/4 and 3P/4  (between quarter and eighth positions)
+    let levels: &[(&[f64], usize)] = &[
+        (&[0.0], 0),                                                           // quarter → col 0
+        (&[period_frames / 2.0], 1),                                           // eighth → col 1
+        (&[period_frames / 4.0, period_frames * 3.0 / 4.0], 2),               // sixteenth → col 2
+    ];
+
+    for &(offsets, col) in levels {
+        for &offset in offsets {
+            // Walk grid positions: phase + offset, phase + offset + P, phase + offset + 2P, ...
+            let mut grid_frame = phase_frames + offset;
+            while grid_frame < 0.0 {
+                grid_frame += period_frames;
+            }
+
+            while (grid_frame as usize) < duration_frames {
+                let center = grid_frame as usize;
+                let search_start = center.saturating_sub(tolerance);
+                let search_end = (center + tolerance + 1).min(duration_frames);
+
+                // Find the strongest unclaimed onset near this grid position
+                let mut best_frame = None;
+                let mut best_strength = 0.0f32;
+                for f in search_start..search_end {
+                    if !claimed[f] && onsets[f] > best_strength && onsets[f] > thresholds[f] {
+                        best_strength = onsets[f];
+                        best_frame = Some(f);
+                    }
+                }
+
+                if let Some(bf) = best_frame {
+                    // Use grid-aligned time for perfect sync with the music
+                    let time = grid_frame / frames_per_sec;
+                    beats.push(Beat { time, col });
+
+                    // Claim frames around this onset so finer levels don't double-count
+                    let claim_start = bf.saturating_sub(tolerance);
+                    let claim_end = (bf + tolerance + 1).min(duration_frames);
+                    for flag in &mut claimed[claim_start..claim_end] {
+                        *flag = true;
+                    }
+                }
+
+                grid_frame += period_frames;
+            }
+        }
+    }
+
+    // Column 3 (syncopation): strong unclaimed onsets that don't fall on any grid
+    let min_interval_frames = (MIN_INTERVAL_SECS * frames_per_sec) as usize;
+    let mut last_sync_frame: Option<usize> = None;
+    for (f, &strength) in onsets.iter().enumerate() {
+        if !claimed[f] && strength > thresholds[f] {
+            if let Some(last) = last_sync_frame {
+                if f - last < min_interval_frames {
+                    continue;
+                }
+            }
+            let time = f as f64 / frames_per_sec;
+            let too_close = beats.iter().any(|b| (b.time - time).abs() < MIN_INTERVAL_SECS);
+            if !too_close {
+                beats.push(Beat { time, col: 3 });
+                last_sync_frame = Some(f);
+            }
+        }
+    }
+
+    beats.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+    beats
 }
 
 /// Minimum time (seconds) between two beats in the same column.
@@ -620,55 +665,6 @@ mod tests {
     // ── Rhythm mode tests ──
 
     #[test]
-    fn test_classify_metrical_downbeat() {
-        // Beats exactly on the grid → col 0
-        let period = 0.5; // 120 BPM
-        let phase = 0.0;
-        assert_eq!(classify_metrical(0.0, period, phase), 0);
-        assert_eq!(classify_metrical(0.5, period, phase), 0);
-        assert_eq!(classify_metrical(1.0, period, phase), 0);
-    }
-
-    #[test]
-    fn test_classify_metrical_offbeat() {
-        // Beats halfway between grid → col 1 (eighth note)
-        let period = 0.5;
-        let phase = 0.0;
-        assert_eq!(classify_metrical(0.25, period, phase), 1);
-        assert_eq!(classify_metrical(0.75, period, phase), 1);
-    }
-
-    #[test]
-    fn test_classify_metrical_sixteenth() {
-        // Beats at quarter subdivisions → col 2
-        let period = 0.5;
-        let phase = 0.0;
-        assert_eq!(classify_metrical(0.125, period, phase), 2);
-        assert_eq!(classify_metrical(0.375, period, phase), 2);
-    }
-
-    #[test]
-    fn test_classify_metrical_syncopation() {
-        // With GRID_TOLERANCE=0.12, grid zones cover ~96% of the beat period.
-        // Syncopation lives in narrow gaps between zones (e.g., fraction ≈ 0.875).
-        // |0.875 - 0.75| = 0.125 > 0.12, |0.875 - 1.0| = 0.125 > 0.12 → col 3.
-        assert_eq!(classify_metrical(0.875, 1.0, 0.0), 3);
-    }
-
-    #[test]
-    fn test_classify_metrical_with_phase() {
-        // With a phase offset, grid shifts
-        let period = 0.5;
-        let phase = 0.1;
-        // 0.1 is on the grid (downbeat)
-        assert_eq!(classify_metrical(0.1, period, phase), 0);
-        // 0.6 = 0.1 + 0.5 (next downbeat)
-        assert_eq!(classify_metrical(0.6, period, phase), 0);
-        // 0.35 = 0.1 + 0.25 (eighth offbeat)
-        assert_eq!(classify_metrical(0.35, period, phase), 1);
-    }
-
-    #[test]
     fn test_rhythm_silence_no_beats() {
         let samples = silence(5.0);
         let beats = find_beats_rhythm(&samples, SAMPLE_RATE);
@@ -679,7 +675,6 @@ mod tests {
     fn test_rhythm_columns_valid() {
         // Generate regular impulses at 120 BPM (0.5s apart) with some offbeats
         let mut samples = silence(10.0);
-        // Downbeats at 1.0, 1.5, 2.0, 2.5, 3.0, ...
         for i in 0..16 {
             let t = 1.0 + i as f64 * 0.5;
             insert_tone_burst(&mut samples, t, 200.0, 0.9, FRAME_SIZE * 2);
@@ -687,6 +682,47 @@ mod tests {
         let beats = find_beats_rhythm(&samples, SAMPLE_RATE);
         for beat in &beats {
             assert!(beat.col < COLS, "Column {} out of range", beat.col);
+        }
+    }
+
+    #[test]
+    fn test_rhythm_hierarchy_quarter_over_eighth() {
+        // Quarter note impulses at 120 BPM (every 0.5s) should be col 0 (beat).
+        // Add eighth-note offbeats (every 0.25s offset) as col 1.
+        let mut samples = silence(10.0);
+        // Quarter notes at 1.0, 1.5, 2.0, ..., 8.0
+        for i in 0..15 {
+            let t = 1.0 + i as f64 * 0.5;
+            insert_tone_burst(&mut samples, t, 200.0, 0.9, FRAME_SIZE * 2);
+        }
+        // Eighth offbeats at 1.25, 1.75, 2.25, ...
+        for i in 0..14 {
+            let t = 1.25 + i as f64 * 0.5;
+            insert_tone_burst(&mut samples, t, 200.0, 0.7, FRAME_SIZE * 2);
+        }
+        let beats = find_beats_rhythm(&samples, SAMPLE_RATE);
+        // Should have both col 0 (quarter) and col 1 (eighth) beats
+        let has_quarter = beats.iter().any(|b| b.col == 0);
+        let has_eighth = beats.iter().any(|b| b.col == 1);
+        assert!(has_quarter, "Should detect quarter note beats (col 0)");
+        assert!(has_eighth, "Should detect eighth note offbeats (col 1)");
+    }
+
+    #[test]
+    fn test_rhythm_beats_are_sorted() {
+        let mut samples = silence(10.0);
+        for i in 0..16 {
+            let t = 1.0 + i as f64 * 0.5;
+            insert_tone_burst(&mut samples, t, 200.0, 0.9, FRAME_SIZE * 2);
+        }
+        let beats = find_beats_rhythm(&samples, SAMPLE_RATE);
+        for pair in beats.windows(2) {
+            assert!(
+                pair[0].time <= pair[1].time,
+                "Beats should be sorted: {:.3} > {:.3}",
+                pair[0].time,
+                pair[1].time
+            );
         }
     }
 
