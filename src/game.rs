@@ -6,7 +6,9 @@ const ROWS: usize = 6;
 
 pub const TICK_MS: u64 = 200;
 const SCROLL_TICKS: usize = 4; // tiles travel from row 0 to row 4 (2-row tile fills rows 4-5)
-pub const SCROLL_DELAY_MS: u64 = TICK_MS * SCROLL_TICKS as u64;
+/// Song start delay: SCROLL_TICKS ticks for the tile to travel from row 0 to the hit zone,
+/// plus 1 tick because the first game tick fires one tick_duration after game start.
+pub const SCROLL_DELAY_MS: u64 = TICK_MS * (SCROLL_TICKS + 1) as u64;
 
 /// Two shades per column so consecutive tiles are visually distinct.
 const COL_SHADES: [[Color; 2]; COLS] = [

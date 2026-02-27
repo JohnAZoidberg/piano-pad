@@ -155,11 +155,10 @@ fn run() -> Result<()> {
     let speed = config.speed;
     let song_path = config.song_path;
 
-    // Wall-clock tick and delay, stretched by 1/speed
+    // Wall-clock tick duration, stretched by 1/speed
     let tick_duration = Duration::from_micros((TICK_MS as f64 / speed as f64 * 1000.0) as u64);
-    let scroll_delay = Duration::from_micros(
-        (SCROLL_DELAY_MS as f64 / speed as f64 * 1000.0) as u64,
-    );
+    // Number of ticks to pre-simulate so tiles are already on-screen when the song starts
+    let pre_ticks = (SCROLL_DELAY_MS / TICK_MS) as usize;
 
     // Find and analyze song before entering raw mode
     println!("Analyzing {}...", song_path.display());
@@ -205,8 +204,6 @@ fn run() -> Result<()> {
     let mut last_grid = [[Color::BLACK; 4]; 6];
     let mut dirty = true;
     let mut last_tick = Instant::now();
-    let mut song_started = false;
-    let mut game_start_time = Instant::now();
     let mut flash: Option<Flash> = None;
 
     // Print initial status
@@ -244,9 +241,15 @@ fn run() -> Result<()> {
                     GameInput::Quit => break,
                     GameInput::AnyKey | GameInput::Press(_, _) => {
                         game.start();
+                        // Pre-simulate ticks so tiles are already on the grid,
+                        // then start song immediately — no silent scrolling.
+                        for _ in 0..pre_ticks {
+                            game.tick();
+                        }
+                        if let Some(ref mut a) = audio {
+                            let _ = a.play_song(&song_path, speed, song_seek);
+                        }
                         last_tick = Instant::now();
-                        game_start_time = Instant::now();
-                        song_started = false;
                         flash = None;
                         dirty = true;
                         print_status(&game);
@@ -283,7 +286,6 @@ fn run() -> Result<()> {
                     GameInput::Quit => break,
                     GameInput::AnyKey | GameInput::Press(_, _) => {
                         game.reset();
-                        song_started = false;
                         flash = None;
                         dirty = true;
                         print_status(&game);
@@ -294,18 +296,12 @@ fn run() -> Result<()> {
 
         // Game timing (only during gameplay)
         if game.state == State::Playing {
-            // Start song after scroll delay
-            if !song_started && game_start_time.elapsed() >= scroll_delay {
-                if let Some(ref mut a) = audio {
-                    let _ = a.play_song(&song_path, speed, song_seek);
-                }
-                song_started = true;
-            }
-
-            // Tick at constant intervals (stretched by 1/speed)
+            // Tick at constant intervals (stretched by 1/speed).
+            // Advance last_tick by tick_duration (not Instant::now()) to prevent
+            // cumulative drift — if a tick fires late, the next fires sooner.
             if last_tick.elapsed() >= tick_duration {
                 let dropped = game.tick();
-                last_tick = Instant::now();
+                last_tick += tick_duration;
                 dirty = true;
 
                 // Flash hit zone red when tiles fall through
